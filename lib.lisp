@@ -1,0 +1,1 @@
+(defn ff (x) (cond ((atom 'x) 'x) (True (ff (car 'x)))))
