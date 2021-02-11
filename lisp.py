@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
+import traceback
+
 AtomSymbol = str
 SList = tuple
 
-
-def UNDEFINED(s):
-    raise Exception(f"undefined: {s}")
-
-
+UNDEFINED = None
 NIL = ()
 
 
@@ -18,14 +16,11 @@ def _repr(s_expr):
     return s_expr if atom(s_expr) else "(" + " ".join(_repr(i).strip("'") for i in s_expr) + ")"
 
 
-def _to_py_proc(e, env=None):
+def _to_py_proc(e, env=None, expand_fn=True, lazy=False):
     """
     >>> _to_py_proc(("defn", "null", ("x", ), ("and_", ("atom", "x"), ("eq", "x", NIL))))
-    "defn('null', ('x',), ('and_', ('atom', 'x'), ('eq', 'x', ())))"
+    "defn('null', ('x'), ('and_', ('atom', 'x'), ('eq', 'x', ())))"
     """
-
-    def lazy_eval(e, env):
-        return _to_py_proc(e, env) if atom(e) else repr(e)
 
     if env is None:
         env = {}
@@ -33,37 +28,47 @@ def _to_py_proc(e, env=None):
 
     if isinstance(e, bool):
         return repr(e)
+    if e == NIL:
+        return '()'
     if atom(e):
-        if e == NIL:
-            return '()'
         # fn as argument
         if (li := elem_fn_table.get(e)) is not None or (li := defn_table.get(e)) is not None:
             assert li[0] == "label"
-            return f"quote({repr(li)})"
+            return f"quote({repr(li)})" if expand_fn else f"'{e}'"
         return e if e in env else f"'{e}'"
+
+    def _lazy_list(e):
+        return f"({', '.join(_to_py_proc(elem, env, expand_fn=False, lazy=True) for elem in e)})"
+
+    if lazy:
+        return _lazy_list(e)
+
     if e[0] == "quote":
-        return f"quote({lazy_eval(e[1], env)})"
+        return f"quote({_to_py_proc(e[1], env, lazy=True)})"
     if e[0] == "defn":
-        return f"{e[0]}{lazy_eval(e[1:], {*e[2], *env})}"
+        return f"defn{_lazy_list(e[1:])}"
     if e[0] == "cond":
-        s = "".join(f"({lazy_eval(p, env)}, {lazy_eval(_e, env)}), " for (p, _e) in e[1:])
+        s = "".join(
+            f"({_to_py_proc(p, env, expand_fn=False, lazy=True)}, {_to_py_proc(_e, env, expand_fn=False, lazy=True)}), "
+            for (p, _e) in e[1:])
         return f"cond({s})"
+
     # define fn
     if e[0] == "label":
         assert len(e) == 3
         assert isinstance(e[1], AtomSymbol)
-        elem_fn_table[e[1]] = e
-        return repr(e)
+        defn_table[e[1]] = e
+        return _lazy_list(e)
     if e[0] == "lambda":
-        return repr(e)
+        return _lazy_list(e)
 
     def _get_fn(e):
-        if e in elem_fn_table:
-            return e
         if isinstance(e, SList):
             # (label eqq (lambda (x y) (eq x y)) 
             if e[0] == "label":
                 assert len(e) == 3
+                if e[1] in elem_fn_table:
+                    return e[1]
                 defn_table[e[1]] = e[2]
                 defn(e[1], e[2][1], e[2][2])
                 return e[1]
@@ -76,9 +81,9 @@ def _to_py_proc(e, env=None):
 
 
 atom = lambda x: isinstance(x, AtomSymbol) or x == NIL or isinstance(x, bool)
-eq = lambda x, y: UNDEFINED("eq") if not atom(x) or not atom(y) else x == y
-car = lambda x: UNDEFINED("car") if atom(x) else x[0]
-cdr = lambda x: UNDEFINED("cdr") if atom(x) else x[1:]
+eq = lambda x, y: UNDEFINED if not atom(x) or not atom(y) else x == y
+car = lambda x: UNDEFINED if atom(x) else x[0]
+cdr = lambda x: UNDEFINED if atom(x) else x[1:]
 cons = lambda x, y: (x, y)
 quote = lambda x: x
 
@@ -87,12 +92,12 @@ def cond(*args):
     for (p, e) in args:
         if isinstance(p, bool) and p or not isinstance(p, bool) and py_eval(p):
             return py_eval(e)
-    UNDEFINED("cond")
+    return UNDEFINED
 
 
 def defn(fn_name: AtomSymbol, args: SList, e):
     if fn_name in elem_fn_table:
-        raise Exception("can not modify elementary fn")
+        raise Exception("can not redefine elementary fn")
 
     defn_table[fn_name] = ("label", fn_name, ("lambda", args, e))
     exec(f"{fn_name} = lambda {', '.join(args)}: {_to_py_proc(e, env={fn_name, *args})}", globals())
@@ -111,8 +116,26 @@ def load(e: AtomSymbol):
     """
     try:
         with open(e) as f:
-            lisp_code = " ".join(f.readlines())
-            interpret(lisp_code)
+            lines = f.readlines()
+            count = 0
+            lisp_code = ""
+            for line in lines:
+                if len(line) == 0 or line.isspace():
+                    continue
+                for c in line:
+                    if c == "(":
+                        count += 1
+                    elif c == ")":
+                        count -= 1
+                        if count < 0:
+                            print('err in parsing')
+                    elif count == 0 and not c.isspace():
+                        print("err in parsing")
+                        return
+                lisp_code += line
+                if count == 0:
+                    interpret(lisp_code)
+                    lisp_code = ""
     except (FileExistsError, FileNotFoundError):
         print(f"[err] can not find {e}")
 
@@ -128,7 +151,6 @@ elem_fn_table = {
     "defn": ("label", "defn", ("lambda", ("fn_name", "args", "e"), NIL)),
     "py_eval": ("label", "py_eval", ("lambda", ("e",), NIL)),
     "load": ("label", "load", ("lambda", ("e",), NIL)),
-
 }
 
 defn_table = {
@@ -136,7 +158,8 @@ defn_table = {
 }
 
 # equaling to `defn("and_", ("p", "q"), ("cond", ("p", "q"), (True, False)))`
-and_ = lambda p, q: cond((p, q), (True, False))
+# and_ = lambda p, q: cond((p, q), (True, False))
+py_eval(("defn", "and_", ("p", "q"), ("cond", ("p", "q"), (True, False))))
 
 # equaling to `or_ = lambda p, q: cond((p, True), (q, True), (True, False))`
 defn("or_", ("p", "q"), ("cond", ("p", True), ("q", True), (True, False)))
@@ -203,8 +226,7 @@ def interpret(s: str):
 
 
 if __name__ == "__main__":
-    import traceback
-
     load("lib.lisp")
+
     while s := input(">>> "):
         interpret(s)

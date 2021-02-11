@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from lisp import *
-from lisp import py_eval, _repr
+from lisp import py_eval, _repr, _to_py_proc
 
 
 def test_lisp():
@@ -27,6 +27,7 @@ def test_lisp():
     assert eq(car(('b', 'c')), 'c') is False
     assert cond((('eq', quote('b'), quote('c')), 'hello'), (True, 'world')) == py_eval(
         ("cond", (("eq", "b", "c"), "hello"), (True, "world"))) == "world"
-    assert cond((("eq", ("car", ("quote", ("c", "b"))), ("cdr", ("quote", (("a", "b"), "c")))), "c"), (True, "d")) == "c"
+    assert cond((("eq", ("car", ("quote", ("c", "b"))), ("cdr", ("quote", (("a", "b"), "c")))), "c"),
+                (True, "d")) == "c"
     assert ("a", "b", "c") == py_eval(("quote", ("a", "b", "c")))
     assert and_(("eq", "a", "a"), True) is True
